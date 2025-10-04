@@ -1,0 +1,5 @@
+kibana.example.com {
+  encode gzip
+  reverse_proxy kib01:5601
+  tls you@example.com
+}

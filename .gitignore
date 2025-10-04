@@ -1,0 +1,9 @@
+compose/.env
+*.env
+*.keystore
+*.pfx
+*.pem
+**/.DS_Store
+**/.idea
+**/.vscode
+snapshots/**
