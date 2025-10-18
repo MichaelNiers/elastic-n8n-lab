@@ -1,0 +1,49 @@
+name: smoke
+on:
+  push: { branches: [ main ] }
+  pull_request: { branches: [ main ] }
+  workflow_dispatch:
+
+jobs:
+  up:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render compose (sanity)
+        run: docker compose -f compose/docker-compose.yml config
+
+      - name: Start stack
+        run: |
+          cp compose/.env.example compose/.env
+          docker compose -f compose/docker-compose.yml pull
+          docker compose -f compose/docker-compose.yml up -d
+
+      - name: Wait & check with PowerShell
+        shell: pwsh
+        run: |
+          $es  = "http://localhost:9200"
+          $kbn = "http://localhost:5601"
+
+          # Warten bis ES antwortet
+          $ok = $false
+          for ($i=0; $i -lt 60; $i++) {
+            try {
+              $h = Invoke-RestMethod "$es/_cluster/health" -TimeoutSec 5
+              if ($h.status) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 2 }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ok) { throw "Elasticsearch did not respond in time." }
+
+          # Kibana Status
+          $r = Invoke-WebRequest "$kbn/api/status" -Headers @{ "kbn-xsrf"="1" } -TimeoutSec 10
+          if ($r.StatusCode -ne 200) { throw "Kibana not OK ($($r.StatusCode))." }
+
+      - name: Show ES version
+        shell: pwsh
+        run: (Invoke-RestMethod "http://localhost:9200").version.number
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose/docker-compose.yml down -v
