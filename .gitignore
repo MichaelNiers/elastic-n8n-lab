@@ -6,4 +6,9 @@ compose/.env
 **/.DS_Store
 **/.idea
 **/.vscode
-snapshots/**
+/logs/
+/snapshots/**
+!/snapshots/.gitkeep
+Thumbs.db
+compose/docker-compose.yml.bak-*
+compose/.env.example.bak-*
