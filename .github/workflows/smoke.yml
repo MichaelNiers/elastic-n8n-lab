@@ -1,49 +1,104 @@
 name: smoke
+
+permissions:
+  contents: read
+
 on:
-  push: { branches: [ main ] }
-  pull_request: { branches: [ main ] }
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   up:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Wichtig für Elasticsearch auf Linux-Runnern
+      - name: Set vm.max_map_count
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Prepare .env
+        run: cp compose/.env.example compose/.env
 
       - name: Render compose (sanity)
-        run: docker compose -f compose/docker-compose.yml config
+        working-directory: compose
+        run: docker compose --env-file .env -f docker-compose.yml config
 
-      - name: Start stack
-        run: |
-          cp compose/.env.example compose/.env
-          docker compose -f compose/docker-compose.yml pull
-          docker compose -f compose/docker-compose.yml up -d
+      - name: Pull images
+        working-directory: compose
+        run: docker compose --env-file .env -f docker-compose.yml pull
 
-      - name: Wait & check with PowerShell
+      - name: Start stack (wait for health)
+        working-directory: compose
+        run: docker compose --env-file .env -f docker-compose.yml up -d --wait --wait-timeout 300
+
+      - name: Wait & check with PowerShell (ES + Kibana)
         shell: pwsh
         run: |
-          $es  = "http://localhost:9200"
-          $kbn = "http://localhost:5601"
+          # IPv4 erzwingen (vermeidet ::1/IPv6-Probleme auf GitHub-Runners)
+          $es  = "http://127.0.0.1:9200"
+          $kbn = "http://127.0.0.1:5601"
 
-          # Warten bis ES antwortet
-          $ok = $false
-          for ($i=0; $i -lt 60; $i++) {
-            try {
-              $h = Invoke-RestMethod "$es/_cluster/health" -TimeoutSec 5
-              if ($h.status) { $ok = $true; break }
-            } catch { Start-Sleep -Seconds 2 }
-            Start-Sleep -Seconds 2
+          function Wait-HttpOk([string]$url, [int]$timeoutSec=180, [hashtable]$headers=@{}) {
+            $deadline = [DateTimeOffset]::UtcNow.AddSeconds($timeoutSec)
+            do {
+              try {
+                # -SkipHttpErrorCheck: wir bekommen auch bei 503/500 eine Response statt Exception
+                $resp = Invoke-WebRequest -Uri $url -TimeoutSec 5 -Headers $headers -SkipHttpErrorCheck
+                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) { return }
+              } catch {
+                # Transportfehler (z. B. Connection reset/refused) ignorieren und erneut versuchen
+              }
+              Start-Sleep -Seconds 2
+            } while ([DateTimeOffset]::UtcNow -lt $deadline)
+            throw "Timeout waiting for $url"
           }
-          if (-not $ok) { throw "Elasticsearch did not respond in time." }
 
-          # Kibana Status
-          $r = Invoke-WebRequest "$kbn/api/status" -Headers @{ "kbn-xsrf"="1" } -TimeoutSec 10
-          if ($r.StatusCode -ne 200) { throw "Kibana not OK ($($r.StatusCode))." }
+          # 1) Erst ES stabil
+          Wait-HttpOk "$es/_cluster/health?wait_for_status=yellow&timeout=5s" 180
 
-      - name: Show ES version
-        shell: pwsh
-        run: (Invoke-RestMethod "http://localhost:9200").version.number
+          # 2) Dann Kibana stabil (mit XSRF-Header)
+          $kbnHeaders = @{ "kbn-xsrf" = "1" }
+          Wait-HttpOk "$kbn/api/status" 180 $kbnHeaders
+
+          # 3) Optional: ES-Version ausgeben (sichtbar im Log)
+          (Invoke-RestMethod "$es").version.number | Write-Host
+
+      - name: Diagnostics (only on failure)
+        if: failure()
+        working-directory: compose
+        run: |
+          docker ps -a
+          docker compose -f docker-compose.yml ps
+          docker compose -f docker-compose.yml logs --no-color --tail=300 es01 || true
+          docker compose -f docker-compose.yml logs --no-color --tail=300 kib01 || true
+          docker compose -f docker-compose.yml logs --no-color --tail=300 > ../compose-all.log || true
+          docker compose -f docker-compose.yml logs --no-color --tail=500 es01 > ../es01.log || true
+          docker compose -f docker-compose.yml logs --no-color --tail=500 kib01 > ../kib01.log || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: |
+            compose-all.log
+            es01.log
+            kib01.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Tear down
         if: always()
-        run: docker compose -f compose/docker-compose.yml down -v
+        working-directory: compose
+        run: docker compose -f docker-compose.yml down -v
