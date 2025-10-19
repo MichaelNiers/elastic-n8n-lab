@@ -1,3 +1,5 @@
+[![CI: smoke](https://github.com/MichaelNiers/elastic-n8n-lab/actions/workflows/smoke.yml/badge.svg?branch=main)](https://github.com/MichaelNiers/elastic-n8n-lab/actions/workflows/smoke.yml)
+
 # elastic-n8n-lab
 
 Reproducible lab with **Elasticsearch** + **Kibana** (Docker Compose), plus helper scripts/notes.
