@@ -1,0 +1,38 @@
+# /etc/caddy/Caddyfile  (and in repo at compose/caddy/Caddyfile)
+
+# 1) Redirect apex domain to Kibana (permanent)
+michaelniers.de {
+    redir https://kibana.michaelniers.de{uri} 308
+}
+
+# 2) Kibana behind Caddy with TLS + Basic Auth
+kibana.michaelniers.de {
+    # Optional: access log to help with troubleshooting
+    log {
+        output file /var/log/caddy/kibana_access.log
+        format console
+    }
+
+    # Compression
+    encode zstd gzip
+
+    # TLS certificate (Let's Encrypt will use this email for renewal notices)
+    tls post@michaelniers.de
+
+    # Security headers (safe defaults that don't break Kibana)
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Content-Type-Options "nosniff"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+
+    # Basic Auth – user 'admin'. Insert the bcrypt hash at deploy time.
+    # Generate with: sudo caddy hash-password --plaintext '<your password>'
+    basic_auth /* {
+        admin $2a$14$REPLACE_ME_WITH_YOUR_BCRYPT_HASH
+    }
+
+    # Reverse proxy to local Kibana
+    reverse_proxy 127.0.0.1:5601
+}
